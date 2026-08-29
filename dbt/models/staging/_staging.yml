@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: stg_hvbp__scores
+    description: Standardized, renamed HVBP Total Performance Score + domain scores, one row per hospital per fiscal year (FY2026 only in this build).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ccn, fiscal_year]
+    columns:
+      - name: ccn
+        description: 6-character CMS Certification Number, zero-padded.
+        tests:
+          - not_null
+      - name: fiscal_year
+        tests:
+          - not_null
+      - name: total_performance_score
+        tests:
+          - not_null
+
+  - name: stg_hospital__attributes
+    description: Standardized ED-domain hospital reference table (facility name, address, state), one row per CCN.
+    columns:
+      - name: ccn
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_ed__throughput
+    description: Standardized ED throughput measure readings (EDV, OP_18a-d, OP_22, OP_23), one row per hospital per measure per reporting window.
+    columns:
+      - name: ccn
+        tests:
+          - not_null
+      - name: measure_id
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["EDV", "OP_18a", "OP_18b", "OP_18c", "OP_18d", "OP_22", "OP_23"]

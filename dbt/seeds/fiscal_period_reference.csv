@@ -1,0 +1,8 @@
+fiscal_year,domain,performance_start,performance_end,lag_years,lag_note
+2026,ed_annual,2024-01-01,2024-12-31,0,"ED volume (EDV) and left-without-being-seen (OP_22) are reported on a calendar-year window, not lagged like HVBP."
+2026,ed_rolling12,2024-07-01,2025-06-30,0,"Median ED time-based measures (OP_18a-d) and OP_23 use a rolling ~12-month window ending closest to the FY2026 reporting cycle."
+2026,hvbp_clinical_outcomes,,,2,"CMS HVBP performance periods are domain-specific and published per fiscal year in the Baseline Measures Report; exact dates are not reproduced here to avoid stating unverified figures. Lag is approximate."
+2026,hvbp_safety,,,2,"See hvbp_clinical_outcomes note. Safety domain performance periods commonly track ~2 years prior to the fiscal year."
+2026,hvbp_person_community,,,2,"HCAHPS survey period for the Person and Community Engagement domain; commonly ~2 years prior to the fiscal year."
+2026,hvbp_efficiency,,,1,"Medicare Spending per Beneficiary uses a shorter, more recent window than the clinical/safety domains; commonly ~1 year prior."
+2026,hvbp_total,,,2,"Total Performance Score composite. Exact per-domain periods should be pulled from the CMS FY2026 Hospital VBP Baseline Measures Report when precision is required."

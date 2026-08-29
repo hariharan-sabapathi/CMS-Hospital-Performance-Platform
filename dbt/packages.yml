@@ -1,0 +1,5 @@
+packages:
+  # Pinned to a git ref rather than dbt Hub — this sandbox's egress policy
+  # allows github.com but not hub.getdbt.com.
+  - git: "https://github.com/dbt-labs/dbt-utils.git"
+    revision: "1.4.1"

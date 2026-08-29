@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dbt: deps",
+      "type": "shell",
+      "command": "dbt deps --profiles-dir .",
+      "options": { "cwd": "${workspaceFolder}/dbt" },
+      "problemMatcher": []
+    },
+    {
+      "label": "dbt: build (DuckDB)",
+      "type": "shell",
+      "command": "dbt build --profiles-dir .",
+      "options": { "cwd": "${workspaceFolder}/dbt" },
+      "problemMatcher": [],
+      "dependsOn": ["dbt: deps"]
+    },
+    {
+      "label": "Full pipeline: ingest -> dbt build",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Ingest: run loader", "dbt: build (DuckDB)"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Ingest: run loader",
+      "type": "shell",
+      "command": "python -m cms_platform.ingest.loader",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint: ruff",
+      "type": "shell",
+      "command": "ruff check src tests",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Docker: compose up",
+      "type": "shell",
+      "command": "docker compose up --build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

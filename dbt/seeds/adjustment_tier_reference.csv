@@ -1,0 +1,5 @@
+min_score,tier_label,adjustment_rate
+46.5,Excellent,0.02
+37.75,Good,0.01
+22.33,Average,0.0
+0,High Risk,-0.01

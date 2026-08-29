@@ -1,0 +1,37 @@
+services:
+  # One-shot: config-driven ingest -> dbt build. Writes the DuckDB file to a
+  # shared volume that `api` then reads read-only.
+  build-warehouse:
+    build: .
+    working_dir: /app
+    volumes:
+      - duckdb_data:/app/warehouse
+    environment:
+      CMS_DUCKDB_PATH: /app/warehouse/cms_platform.duckdb
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        python3 -m cms_platform.ingest.loader &&
+        cd dbt && dbt build --profiles-dir .
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - duckdb_data:/app/warehouse
+    environment:
+      CMS_DUCKDB_PATH: /app/warehouse/cms_platform.duckdb
+      CMS_API_DUCKDB_PATH: /app/warehouse/cms_platform.duckdb
+      CMS_API_KEY: ${CMS_API_KEY:-dev-local-key}
+    depends_on:
+      build-warehouse:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  duckdb_data:

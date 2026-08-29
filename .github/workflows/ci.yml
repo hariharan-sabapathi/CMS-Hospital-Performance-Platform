@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install project (dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check src tests
+
+      - name: Run the config-driven loader (lands data/bronze/*.csv)
+        run: python -m cms_platform.ingest.loader
+
+      - name: pytest
+        run: pytest -v
+
+      - name: dbt deps
+        working-directory: dbt
+        run: dbt deps --profiles-dir .
+
+      - name: dbt build (DuckDB)
+        working-directory: dbt
+        run: dbt build --profiles-dir .
+
+      - name: API smoke test against the built DuckDB
+        run: |
+          python -c "
+          from fastapi.testclient import TestClient
+          from cms_platform.api.main import app
+          client = TestClient(app)
+          r = client.get('/health')
+          assert r.status_code == 200, r.text
+          assert r.json()['status'] == 'ok', r.json()
+          print('API health check OK:', r.json())
+          "

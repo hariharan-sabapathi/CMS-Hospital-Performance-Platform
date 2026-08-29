@@ -1,0 +1,66 @@
+# =============================================================================
+# cms_iqr — CMS Hospital Inpatient Quality Reporting, Emergency Department
+# slice ("Timely and Effective Care - Hospital" dataset), FY2026 reporting
+# window (~2024-07 to 2025-06).
+# =============================================================================
+# The true raw IQR export covers every condition and measure CMS reports
+# (not just ED) and runs tens of millions of rows — too large to commit to
+# source control. It is filtered to Condition == "Emergency Department" and
+# split into two tables by transform/spark_jobs.py, which is the PySpark job
+# this config's inputs are the output of. This loader re-validates and lands
+# those two tables to Bronze using the same engine and dtype-hint mechanism
+# as cms_hvbp.yml — the "two ingestion styles become one" story: PySpark
+# handles the volume the raw file requires; this config-driven loader is the
+# single validation/landing layer both sources pass through on the way to
+# Bronze.
+#
+# To regenerate hospital_standardized.csv / ed_throughput_standardized.csv
+# from scratch: place the raw extract at
+#   data/raw/Timely_and_Effective_Care-Hospital_SOURCE.csv
+# and run `python -m cms_platform.transform.spark_jobs`.
+
+source: cms_iqr
+description: >
+  ED throughput measures (EDV, OP_18a-d, OP_22, OP_23) from Timely and
+  Effective Care - Hospital, plus the facility reference table. FY2026
+  reporting window only — see README data limitations.
+is_ccn: facility_id
+
+tables:
+  hospital:
+    file: data/standardized/hospital_standardized.csv
+    output: data/bronze/cms_hospital_reference.csv
+    key: [facility_id]
+    schema:
+      facility_id: {type: string, required: true, dtype_hint: str}
+      facility_name: {type: string, required: true}
+      address: {type: string, required: false}
+      city: {type: string, required: false}
+      state: {type: string, required: true}
+      zip_code: {type: string, required: false, dtype_hint: str}
+      county: {type: string, required: false}
+      telephone_number: {type: string, required: false}
+    validation:
+      - unique: [facility_id]
+      - not_null: [facility_id, state]
+      - row_count_min: 3000
+
+  measures:
+    file: data/standardized/ed_throughput_standardized.csv
+    output: data/bronze/cms_ed_measures.csv
+    key: [facility_id, measure_id, start_date, end_date]
+    schema:
+      facility_id: {type: string, required: true, dtype_hint: str}
+      measure_id: {type: string, required: true}
+      measure_name: {type: string, required: false}
+      start_date: {type: string, required: false}
+      end_date: {type: string, required: false}
+      score_numeric: {type: float, required: false}
+      score_raw: {type: string, required: false}
+      score_available: {type: string, required: false}
+      sample_size: {type: string, required: false}
+      footnote: {type: string, required: false}
+    validation:
+      - unique: [facility_id, measure_id, start_date, end_date]
+      - not_null: [facility_id, measure_id]
+      - row_count_min: 20000

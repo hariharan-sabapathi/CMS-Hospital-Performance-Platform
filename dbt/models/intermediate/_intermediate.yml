@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: int_hospital_ed_summary
+    description: One row per hospital (CCN), ED throughput measures pivoted wide from stg_ed__throughput.
+    columns:
+      - name: ccn
+        tests:
+          - not_null
+          - unique
+      - name: ed_boarding_time_minutes
+        description: "Boarding-time proxy: OP_18d, median minutes before transfer to another facility. No dedicated CMS boarding-time measure exists in this measure set — see model docs."

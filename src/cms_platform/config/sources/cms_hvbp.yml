@@ -1,0 +1,57 @@
+# =============================================================================
+# cms_hvbp — Hospital Value-Based Purchasing Total Performance Score, FY2026
+# =============================================================================
+# True raw CMS export, unmodified column headers. Source:
+#   https://data.cms.gov/provider-data/dataset/hospital-value-based-purchasing-hvbp-total-performance-score
+#
+# This is the file that carried the CCN bug: "Facility ID" is written
+# unquoted in the raw CSV (e.g. 010001), so a naive pandas.read_csv() infers
+# it as an integer column and silently drops the leading zero. dtype_hint
+# forces every read of this column to string, from the very first parse.
+
+source: cms_hvbp
+description: >
+  HVBP Total Performance Score and domain scores, FY2026 (single fiscal
+  year — see README data limitations).
+file: data/raw/hvbp_total_performance.csv
+output: data/bronze/cms_hvbp.csv
+key: [facility_id, fiscal_year]
+is_ccn: facility_id
+
+# Maps raw CMS column headers -> canonical snake_case field names.
+column_map:
+  "Fiscal Year": fiscal_year
+  "Facility ID": facility_id
+  "Facility Name": facility_name
+  "Address": address
+  "City/Town": city
+  "State": state
+  "ZIP Code": zip_code
+  "County/Parish": county
+  "Weighted Normalized Clinical Outcomes Domain Score": clinical_outcomes_score
+  "Weighted Safety Domain Score": safety_score
+  "Weighted Person And Community Engagement Domain Score": person_community_score
+  "Weighted Efficiency And Cost Reduction Domain Score": efficiency_score
+  "Total Performance Score": total_performance_score
+
+schema:
+  facility_id:
+    type: string
+    required: true
+    dtype_hint: str          # preserves leading zeros — see is_ccn above
+  fiscal_year: {type: int, required: true}
+  facility_name: {type: string, required: true}
+  state: {type: string, required: true}
+  city: {type: string, required: false}
+  zip_code: {type: string, required: false, dtype_hint: str}
+  county: {type: string, required: false}
+  clinical_outcomes_score: {type: float, required: false, min: 0}
+  safety_score: {type: float, required: false, min: 0}
+  person_community_score: {type: float, required: false, min: 0}
+  efficiency_score: {type: float, required: false, min: 0}
+  total_performance_score: {type: float, required: true, min: 0, max: 100}
+
+validation:
+  - unique: [facility_id, fiscal_year]
+  - not_null: [facility_id, fiscal_year, total_performance_score]
+  - row_count_min: 2000

@@ -1,26 +1,18 @@
 -- =============================================================================
 -- 02_copy_into_stage.sql
--- Loads the standardized CSVs (data/curated/) into Snowflake's RAW schema.
---
--- Written for the LOCAL development phase: files are pushed to an internal
--- named stage via PUT (or Snowsight's drag-and-drop loader) and loaded with
--- COPY INTO. When the project migrates to AWS (Phase 5), only the stage
--- definition changes to an external stage backed by a storage integration --
--- COPY INTO and every downstream dbt model stay identical.
---
--- This script loads RAW tables only. dbt builds everything from here
--- (`dbt run` in the dbt/ directory) -- there is no manual load step for
--- the STAR schema.
+-- Loads data/bronze/*.csv (the output of `python -m cms_platform.ingest.loader`)
+-- into Snowflake's RAW schema. See 01_create_raw_schema.sql for why this
+-- exists: DuckDB (the default dbt target) doesn't need it.
 -- =============================================================================
 
-USE WAREHOUSE ED_THROUGHPUT_WH;
-USE DATABASE ED_THROUGHPUT_DB;
+USE WAREHOUSE CMS_PLATFORM_WH;
+USE DATABASE CMS_PLATFORM;
 
 -- -----------------------------------------------------------------------------
 -- File format shared by every load.
 -- -----------------------------------------------------------------------------
 
-CREATE OR REPLACE FILE FORMAT ED_THROUGHPUT_DB.RAW.CSV_STANDARD
+CREATE OR REPLACE FILE FORMAT CMS_PLATFORM.RAW.CSV_STANDARD
     TYPE = 'CSV'
     FIELD_DELIMITER = ','
     SKIP_HEADER = 1
@@ -29,45 +21,49 @@ CREATE OR REPLACE FILE FORMAT ED_THROUGHPUT_DB.RAW.CSV_STANDARD
     EMPTY_FIELD_AS_NULL = TRUE;
 
 -- -----------------------------------------------------------------------------
--- Internal named stage (local dev). In Phase 5 this becomes:
---   CREATE STAGE ED_THROUGHPUT_DB.RAW.CURATED_S3_STAGE
---     URL = 's3://<PLACEHOLDER_BUCKET>/curated/'
---     STORAGE_INTEGRATION = <PLACEHOLDER_STORAGE_INTEGRATION>
---     FILE_FORMAT = ED_THROUGHPUT_DB.RAW.CSV_STANDARD;
+-- Internal named stage (local dev). A production deployment would swap this
+-- for an external stage backed by a storage integration pointed at wherever
+-- data/bronze/ is published (see architecture/pipeline_overview.txt).
 -- -----------------------------------------------------------------------------
 
-CREATE OR REPLACE STAGE ED_THROUGHPUT_DB.RAW.CURATED_LOCAL_STAGE
-    FILE_FORMAT = ED_THROUGHPUT_DB.RAW.CSV_STANDARD;
+CREATE OR REPLACE STAGE CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE
+    FILE_FORMAT = CMS_PLATFORM.RAW.CSV_STANDARD;
 
--- Upload standardized CSVs into the stage (run from SnowSQL CLI, or use
+-- Upload Bronze CSVs into the stage (run from SnowSQL CLI, or use
 -- Snowsight's "Load Data" drag-and-drop instead of PUT during local dev):
---   PUT file://data/curated/hospital_standardized.csv       @ED_THROUGHPUT_DB.RAW.CURATED_LOCAL_STAGE;
---   PUT file://data/curated/ed_throughput_standardized.csv  @ED_THROUGHPUT_DB.RAW.CURATED_LOCAL_STAGE;
+--   PUT file://data/bronze/cms_hospital_reference.csv  @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE;
+--   PUT file://data/bronze/cms_ed_measures.csv          @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE;
+--   PUT file://data/bronze/cms_hvbp.csv                 @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE;
 
 -- -----------------------------------------------------------------------------
 -- COPY INTO the RAW tables.
 -- -----------------------------------------------------------------------------
 
-COPY INTO ED_THROUGHPUT_DB.RAW.HOSPITAL_STANDARDIZED
-FROM @ED_THROUGHPUT_DB.RAW.CURATED_LOCAL_STAGE/hospital_standardized.csv
-FILE_FORMAT = (FORMAT_NAME = ED_THROUGHPUT_DB.RAW.CSV_STANDARD)
+COPY INTO CMS_PLATFORM.RAW.CMS_HOSPITAL_REFERENCE
+FROM @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE/cms_hospital_reference.csv
+FILE_FORMAT = (FORMAT_NAME = CMS_PLATFORM.RAW.CSV_STANDARD)
 ON_ERROR = 'ABORT_STATEMENT';
 
-COPY INTO ED_THROUGHPUT_DB.RAW.ED_THROUGHPUT_STANDARDIZED
-FROM @ED_THROUGHPUT_DB.RAW.CURATED_LOCAL_STAGE/ed_throughput_standardized.csv
-FILE_FORMAT = (FORMAT_NAME = ED_THROUGHPUT_DB.RAW.CSV_STANDARD)
+COPY INTO CMS_PLATFORM.RAW.CMS_ED_MEASURES
+FROM @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE/cms_ed_measures.csv
+FILE_FORMAT = (FORMAT_NAME = CMS_PLATFORM.RAW.CSV_STANDARD)
+ON_ERROR = 'ABORT_STATEMENT';
+
+COPY INTO CMS_PLATFORM.RAW.CMS_HVBP
+FROM @CMS_PLATFORM.RAW.BRONZE_LOCAL_STAGE/cms_hvbp.csv
+FILE_FORMAT = (FORMAT_NAME = CMS_PLATFORM.RAW.CSV_STANDARD)
 ON_ERROR = 'ABORT_STATEMENT';
 
 -- -----------------------------------------------------------------------------
 -- Quick load sanity check.
 -- -----------------------------------------------------------------------------
 
-SELECT 'HOSPITAL_STANDARDIZED' AS table_name, COUNT(*) AS row_count
-FROM ED_THROUGHPUT_DB.RAW.HOSPITAL_STANDARDIZED
+SELECT 'CMS_HOSPITAL_REFERENCE' AS table_name, COUNT(*) AS row_count FROM CMS_PLATFORM.RAW.CMS_HOSPITAL_REFERENCE
 UNION ALL
-SELECT 'ED_THROUGHPUT_STANDARDIZED', COUNT(*)
-FROM ED_THROUGHPUT_DB.RAW.ED_THROUGHPUT_STANDARDIZED;
+SELECT 'CMS_ED_MEASURES', COUNT(*) FROM CMS_PLATFORM.RAW.CMS_ED_MEASURES
+UNION ALL
+SELECT 'CMS_HVBP', COUNT(*) FROM CMS_PLATFORM.RAW.CMS_HVBP;
 
--- Next step: cd dbt/ && dbt run && dbt test
--- dbt builds the STAR schema (dimensions, fact, and mart) from these two
--- RAW tables -- see dbt/models/staging/ and dbt/models/marts/.
+-- Next step: point dbt/macros/read_bronze.sql's staging callers at
+-- {{ source('raw', table_name) }} for the snowflake target, then:
+--   cd dbt && DBT_TARGET=snowflake dbt build --profiles-dir .

@@ -1,0 +1,13 @@
+measure_id,measure_name,source,domain,direction,unit
+EDV,Emergency department volume,ed_throughput,Volume,not_applicable,category
+OP_18a,Median time all patients spent in the ED before leaving (arrival to departure),ed_throughput,Time-Based,lower_is_better,minutes
+OP_18b,Median time patients spent in the ED before leaving excluding transfers,ed_throughput,Time-Based,lower_is_better,minutes
+OP_18c,Median time psychiatric/mental health patients spent in the ED,ed_throughput,Time-Based,lower_is_better,minutes
+OP_18d,Median time patients spent in the ED before being transferred to another facility (boarding-time proxy),ed_throughput,Time-Based,lower_is_better,minutes
+OP_22,Percent of patients who left the ED before being seen,ed_throughput,Rate,lower_is_better,percent
+OP_23,Percent of ED head CT scan results meeting timely-review criteria,ed_throughput,Process Compliance,higher_is_better,percent
+HVBP_CLINICAL,HVBP Clinical Outcomes domain score,hvbp,Clinical Outcomes,higher_is_better,points
+HVBP_SAFETY,HVBP Safety domain score,hvbp,Safety,higher_is_better,points
+HVBP_PERSON_COMMUNITY,HVBP Person and Community Engagement domain score,hvbp,Person and Community Engagement,higher_is_better,points
+HVBP_EFFICIENCY,HVBP Efficiency and Cost Reduction domain score,hvbp,Efficiency and Cost Reduction,higher_is_better,points
+HVBP_TPS,HVBP Total Performance Score,hvbp,Total Performance,higher_is_better,points

@@ -1,3 +1,0 @@
-pyspark==4.1.2
-pandas>=2.0
-dbt-snowflake==1.11.*

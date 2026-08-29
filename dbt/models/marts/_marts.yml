@@ -1,0 +1,138 @@
+version: 2
+
+models:
+  - name: dim_hospital
+    description: One row per hospital seen in either source (HVBP or ED throughput), with coverage flags rather than an inner join.
+    tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "length(ccn) = 6"
+    columns:
+      - name: hospital_key
+        tests:
+          - not_null
+          - unique
+      - name: ccn
+        description: 6-character CMS Certification Number, zero-padded. See README "Fixing the CCN bug".
+        tests:
+          - not_null
+          - unique
+      - name: present_in_hvbp
+        tests:
+          - not_null
+      - name: present_in_ed
+        tests:
+          - not_null
+
+  - name: dim_measure
+    columns:
+      - name: measure_key
+        tests:
+          - not_null
+          - unique
+      - name: source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["hvbp", "ed_throughput"]
+      - name: direction
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["higher_is_better", "lower_is_better", "not_applicable"]
+
+  - name: dim_fiscal_period
+    columns:
+      - name: fiscal_period_key
+        tests:
+          - not_null
+          - unique
+
+  - name: fact_ed_measure
+    description: One row per hospital x ED measure x reporting period.
+    columns:
+      - name: hospital_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_hospital')
+                field: hospital_key
+      - name: measure_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_measure')
+                field: measure_key
+      - name: period_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_fiscal_period')
+                field: fiscal_period_key
+
+  - name: fact_hvbp_domain_score
+    columns:
+      - name: hospital_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_hospital')
+                field: hospital_key
+      - name: domain_score
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "between 0 and 100"
+              config:
+                where: "domain_score is not null"
+
+  - name: fact_hvbp_performance
+    description: One row per hospital per fiscal year. estimated_dollar_impact_synthetic is a modeling assumption, not a CMS-published figure — see column doc.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [hospital_key, fiscal_year]
+    columns:
+      - name: hospital_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_hospital')
+                field: hospital_key
+      - name: total_performance_score
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "between 0 and 100"
+      - name: estimated_dollar_impact_synthetic
+        description: >
+          Derived from Total Performance Score quartile tiers (calibrated to
+          the FY2026 score distribution, dbt/seeds/adjustment_tier_reference.csv)
+          against an assumed $10M Medicare base revenue
+          (var: assumed_base_medicare_revenue). This is a modeling assumption
+          for demonstration purposes, NOT a CMS-published payment adjustment
+          figure. Never present it as real payment data.
+      - name: payment_adjustment_factor
+        description: >
+          The real CMS payment adjustment factor (IPPS Final Rule Table
+          16B). Not loaded in this build — see README data limitations.
+          Nullable placeholder so the real figure can be populated later
+          without a schema change.
+
+  - name: mart_ed_performance_vs_hvbp
+    description: >
+      One row per hospital: ED throughput measures alongside HVBP total and
+      domain performance scores, plus within-state and within-ED-volume-peer-group
+      percentile ranks on ED boarding time. Cross-sectional, single fiscal
+      year (FY2026) — no lag applied. See README "Key finding".
+    columns:
+      - name: hospital_key
+        tests:
+          - not_null
+          - unique

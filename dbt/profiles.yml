@@ -1,0 +1,23 @@
+# Committed (not .example) on purpose: the default `duckdb` target needs no
+# credentials, so `dbt run --profiles-dir .` works for anyone who clones the
+# repo. The `snowflake` target is the documented production alternate — set
+# DBT_TARGET=snowflake plus the SNOWFLAKE_* env vars to use it; nothing in
+# the models changes between targets.
+cms_platform:
+  target: "{{ env_var('DBT_TARGET', 'duckdb') }}"
+  outputs:
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('CMS_DUCKDB_PATH', 'cms_platform.duckdb') }}"
+      threads: 4
+
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
+      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'TRANSFORMER') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'CMS_PLATFORM') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'CMS_PLATFORM_WH') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA', 'ANALYTICS') }}"
+      threads: 4
