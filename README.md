@@ -9,8 +9,6 @@ The project puts both datasets through one ingestion system, stores them in a db
 
 The project also identifies and fixes a real hospital ID data problem and performs an analysis comparing Emergency Department boarding time with HVBP performance.
 
-> **Note:** This repository does not contain a machine-learning model or a `/predict` endpoint. The ML work in the portfolio is part of other projects.
-
 ---
 
 ## Architecture
