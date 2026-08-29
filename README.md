@@ -1,262 +1,554 @@
 # CMS Hospital Performance Platform
 
-![CI](https://github.com/hariharan-sabapathi/Healthcare-Operations-Analytics-Pipeline/actions/workflows/ci.yml/badge.svg)
+A data platform that combines two CMS healthcare datasets:
 
-A data platform, not two demo scripts: CMS Hospital Value-Based Purchasing
-(HVBP) financial-impact data and CMS Inpatient Quality Reporting (IQR)
-Emergency Department throughput data, merged into one config-driven
-ingestion layer, one dbt star schema, and one read API — with a real bug
-found and fixed on the way, and one finding at the end that reports what
-the data actually says.
+- **CMS Hospital Value-Based Purchasing (HVBP)** — financial and hospital performance data
+- **CMS Inpatient Quality Reporting (IQR)** — Emergency Department performance data
 
-There is no `/predict` endpoint and no model in this repo. The ML in this
-portfolio lives in the retrieval system and the denial agent, not here —
-see "What this repo demonstrates" below.
+The project puts both datasets through one ingestion system, stores them in a dbt data warehouse, and provides a FastAPI read API and Power BI dashboards.
+
+The project also identifies and fixes a real hospital ID data problem and performs an analysis comparing Emergency Department boarding time with HVBP performance.
+
+> **Note:** This repository does not contain a machine-learning model or a `/predict` endpoint. The ML work in the portfolio is part of other projects.
+
+---
 
 ## Architecture
 
+```text
+CMS HVBP                         CMS IQR Emergency Department Data
+     |                                      |
+     |                              PySpark processing
+     |                                      |
+     +---------------+----------------------+
+                     |
+                     v
+             Config-driven loader
+              (ingest/loader.py)
+                     |
+          Two YAML source configurations
+          - cms_hvbp.yml
+          - cms_iqr.yml
+                     |
+                     v
+              Bronze CSV layer
+                     |
+                     v
+                dbt staging
+                     |
+                     v
+             dbt intermediate
+                     |
+                     v
+                 dbt marts
+                     |
+                     v
+              FastAPI read API
+                     |
+                     v
+               Power BI dashboards
 ```
-CMS HVBP CSV (data/raw/)              CMS IQR "Emergency Department" slice
-        |                                          |
-        |                              PySpark ingest + standardize
-        |                          (transform/spark_jobs.py, not run in CI —
-        |                           raw multi-condition IQR export too large
-        |                           to commit; committed output below)
-        |                                          |
-        v                                          v
-              Config-driven loader (ingest/loader.py)
-     one engine, two YAML configs (config/sources/cms_hvbp.yml, cms_iqr.yml)
-        dtype hints applied at read time, validation, CCN normalization
-                                   |
-                                   v
-                    Bronze layer (data/bronze/*.csv)
-                                   |
-                                   v
-                  dbt staging (stg_hvbp__scores, stg_ed__throughput,
-                                stg_hospital__attributes)
-                                   |
-                                   v
-              dbt intermediate (int_hospital_ed_summary)
-                                   |
-                                   v
-       dbt marts: dim_hospital, dim_measure, dim_fiscal_period,
-                  fact_ed_measure, fact_hvbp_domain_score,
-                  fact_hvbp_performance, mart_ed_performance_vs_hvbp
-                                   |
-                                   v
-              FastAPI read API (api/main.py)  +  Power BI dashboards
+
+The ingestion system uses one loader for both datasets. The YAML configuration files define things such as data types, validation rules, and output locations.
+
+dbt uses **DuckDB by default**, so the entire warehouse can be built locally without credentials.
+
+Snowflake is also documented as an alternative database. The main models after the staging layer are designed to work with either warehouse.
+
+---
+
+# Main Finding
+
+The project compares Emergency Department boarding time with the hospital's HVBP Total Performance Score (TPS).
+
+There is no CMS measure specifically called "boarding time." This project uses **OP_18d**, which measures the median number of minutes before a patient is transferred to another facility, as a proxy for boarding time.
+
+Hospitals were divided into four groups based on their boarding time:
+
+| Group | Average Boarding Time | Average TPS | Hospitals |
+|---|---:|---:|---:|
+| Q1 — Fastest | 233 min | 33.07 | 270 |
+| Q2 | 301 min | 33.36 | 271 |
+| Q3 | 360 min | 33.96 | 270 |
+| Q4 — Slowest | 489 min | 31.78 | 268 |
+
+The Spearman correlation was:
+
+**ρ = −0.0254, p = 0.40**
+
+This means there was **no meaningful relationship** between ED boarding time and the overall HVBP Total Performance Score in FY2026.
+
+The average TPS was relatively flat across the groups:
+
+**33.1 → 33.4 → 34.0 → 31.8**
+
+So the data does not show that hospitals with longer ED boarding times necessarily have lower or higher HVBP scores.
+
+This is a reasonable finding because ED throughput is not directly one of the HVBP scoring categories.
+
+The analysis includes **1,079 hospitals** that had both metrics available.
+
+> This is a correlation analysis using one fiscal year of data. It does not prove that ED performance causes changes in reimbursement.
+
+Run the analysis with:
+
+```bash
+python -m cms_platform.analysis.ed_hvbp_finding
 ```
 
-dbt targets **DuckDB by default** — `dbt build --profiles-dir dbt` runs the
-entire warehouse locally from a fresh clone, no credentials required.
-Snowflake is a documented alternate target (`DBT_TARGET=snowflake` plus
-`SNOWFLAKE_*` env vars, `dbt/profiles.yml`); staging models read Bronze
-directly via DuckDB's `read_csv()` (`dbt/macros/read_bronze.sql`), so the
-Snowflake path needs the Bronze CSVs loaded into `RAW` tables first
-(`snowflake/*.sql`) and that macro swapped for a `source()` read against
-them — everything downstream of staging (intermediate, marts, tests) is
-warehouse-agnostic SQL and needs no changes. That staging-layer swap is the
-one seam not implemented in this build.
+Run this after completing the dbt build.
 
-Lineage, generated by `dbt docs generate`:
+---
 
-![dbt lineage graph](architecture/screenshots/dbt_lineage_graph.png)
+# Data Model
 
-## Key finding
+The project uses a star-schema style data model.
 
-Hospitals were grouped into quartiles by ED boarding time (proxy: OP_18d,
-median minutes before transfer to another facility — see "Data model"),
-and their mean HVBP Total Performance Score (TPS) was compared quartile to
-quartile:
+### `dim_hospital`
 
-| Boarding time quartile | Mean boarding time (min) | Mean TPS | n |
-|---|---|---|---|
-| Q1 (fastest) | 233 | 33.07 | 270 |
-| Q2 | 301 | 33.36 | 271 |
-| Q3 | 360 | 33.96 | 270 |
-| Q4 (slowest) | 489 | 31.78 | 268 |
+Contains one row for each hospital CCN found in either dataset.
 
-**Spearman ρ = −0.0254 (p = 0.40, n = 1,079 hospitals with both metrics) —
-ED boarding time shows no meaningful relationship to overall HVBP Total
-Performance Score in FY2026.** Mean TPS is flat across quartiles (33.1 →
-33.4 → 34.0 → 31.8); nothing about it moves monotonically with boarding
-time.
+It also shows whether the hospital appears in:
 
-That's a reasonable result to report as-is: ED throughput measures aren't
-HVBP components (HVBP scores Clinical Outcomes, Safety, Person & Community
-Engagement, and Efficiency — none of which is ED wait time), so a weak
-relationship is the expected finding, not a failed analysis. n = 1,079 is
-smaller than the 2,451-hospital CCN overlap between the two sources (see
-below) because OP_18d — a transfer-time measure — isn't reported by every
-hospital (small facilities with few transfers report "Not Available").
+- HVBP data
+- ED data
 
-This is **correlational and cross-sectional**: one fiscal year (FY2026), no
-lag applied. Nothing here implies ED performance causes reimbursement
-outcomes — see "Data limitations".
+This makes it possible to see missing coverage instead of automatically removing hospitals through an inner join.
 
-Reproduce it: `python -m cms_platform.analysis.ed_hvbp_finding` (after
-`dbt build`).
+### `dim_measure`
 
-## Data model
+Contains the measures from both datasets:
 
-**dim_hospital** — one row per CCN seen in *either* source, with
-`present_in_hvbp` / `present_in_ed` coverage flags rather than an inner
-join, so coverage gaps are visible instead of silently dropped.
+- 7 Emergency Department measures
+- 5 HVBP domain/total scores
 
-**dim_measure** — one row per measure across both sources (7 ED measures +
-5 HVBP domain/total scores), with `domain`, `direction`
-(`higher_is_better` / `lower_is_better` / `not_applicable`), and `unit`.
+It also stores:
 
-**dim_fiscal_period** — FY2026 rows per reporting domain, with
-`performance_start` / `performance_end` / `lag_years`. HVBP FY *N* scores a
-performance window that runs roughly *N−2* to *N−3* relative to the fiscal
-year, and that window **differs by domain** (Efficiency uses a shorter,
-more recent window than Clinical Outcomes or Safety) — exact CMS-published
-per-domain dates weren't reproduced here to avoid stating figures this
-project couldn't independently verify (see `dbt/seeds/fiscal_period_reference.csv`
-for what is and isn't populated). The ED throughput windows *are* precise,
-because they're read directly from the data: EDV/OP_22 use calendar year
-2024; OP_18a-d/OP_23 use a rolling ~12-month window (2024-07 to 2025-06).
-**With a single fiscal year of HVBP data, the lag can't actually be
-exercised** — the model is built to carry it because a second fiscal year
-should slot in without a schema change, not because this build demonstrates it.
+- Measure domain
+- Whether higher or lower values are better
+- Unit of measurement
 
-**fact_ed_measure**, **fact_hvbp_domain_score**, **fact_hvbp_performance** —
-one row per hospital × measure × period; one row per hospital × domain;
-one row per hospital × fiscal year, respectively.
+### `dim_fiscal_period`
 
-**mart_ed_performance_vs_hvbp** — the analysis-ready wide table: ED
-measures pivoted per hospital, HVBP total + domain scores, and
-within-state / within-ED-volume-peer-group percentile ranks on boarding
-time.
+Contains fiscal-year information.
 
-**Boarding time proxy**: this measure set (EDV, OP_18a–d, OP_22, OP_23) has
-no measure named "boarding time." OP_18d — median minutes before transfer
-to another facility — is used as the proxy, since transferred patients are
-the ones literally boarding in the ED awaiting their next placement. This
-is a documented modeling choice, not a CMS-defined metric (see
-`dbt/seeds/measure_reference.csv`).
+The model is designed to support different performance periods and lag years.
 
-### The synthetic financial field
+The current project contains only FY2026 HVBP data, so the lag structure cannot yet be demonstrated across multiple years.
 
-`fact_hvbp_performance.estimated_dollar_impact_synthetic` is a **modeling
-assumption**, not CMS data: it's Total Performance Score quartile tiers
-(`dbt/seeds/adjustment_tier_reference.csv`, calibrated to the actual FY2026
-score distribution — 25th/75th/90th percentiles, not an arbitrary 0–100
-grading curve) times an assumed $10M Medicare base revenue per hospital.
-**It is never presented as a real payment figure anywhere in this repo.**
+The ED reporting periods come directly from the data:
 
-`payment_adjustment_factor` is a nullable placeholder column, populated
-with `null` in this build, for the real CMS-published adjustment factor
-(IPPS Final Rule Table 16B — public, roughly a decade of history, just not
-reachable from this project's build environment). The schema is scoped so
-that column can be populated later without a migration.
+- EDV / OP_22 → calendar year 2024
+- OP_18a–d / OP_23 → approximately July 2024 through June 2025
 
-## Data limitations
+### Fact Tables
 
-- **Single fiscal year (FY2026).** Multi-year analysis, and the fiscal-year
-  lag structure `dim_fiscal_period` is built for, are both deferred until a
-  second year of HVBP data is available.
-- **ED throughput only.** The IQR measure set ingested is EDV, OP_18a–d,
-  OP_22, OP_23 (Timely and Effective Care – Hospital, "Emergency
-  Department" condition). Broader IQR measures — readmissions, mortality,
-  PSI-90, HCAHPS beyond what HVBP already carries — are not ingested.
-- **Real payment adjustment factor not loaded.** It's public (IPPS Table
-  16B, cms.gov) but not reachable from this build environment.
-  `payment_adjustment_factor` stays `null`; `estimated_dollar_impact_synthetic`
-  is a clearly labeled modeling assumption instead (see above) — never a
-  substitute for the real figure.
-- **HVBP fiscal-period windows are approximate for anything beyond what
-  the raw data states.** Exact per-domain CMS baseline/performance-period
-  dates should be pulled from the FY2026 Hospital VBP Baseline Measures
-  Report when precision is required; this build doesn't reproduce them.
-- **The ED boarding-time metric is a proxy** (OP_18d), not a CMS-defined
-  boarding-time measure — see "Data model."
-- **The key finding is correlational**, one fiscal year, cross-sectional.
-  It does not, and isn't meant to, establish that ED throughput affects
-  reimbursement.
+The project contains:
 
-## Engineering
+- `fact_ed_measure`
+- `fact_hvbp_domain_score`
+- `fact_hvbp_performance`
 
-**Fixing the CCN bug.** The original HVBP loader (repo 3's `src/transform.py`
-/ `load.py`) called `pd.read_csv()` on the raw HVBP export with no dtype
-hints. CMS writes Facility ID unquoted (`010001`, not `"010001"`), so
-pandas' type inference read the column as an integer and silently dropped
-the leading zero — `provider_id` ended up `10001` everywhere downstream,
-breaking every join against the 6-character CCNs used elsewhere in this
-platform. The fix, applied in three places (defense in depth, not
-redundancy — each layer can be read on its own file and would otherwise
-reintroduce the bug):
+These store hospital-level measurements and scores.
 
-1. `ingest/loader.py` passes `dtype={raw_column: str}` straight into
-   `pandas.read_csv()`, computed from each source config's `dtype_hint: str`
-   — the column is never given the chance to be inferred as numeric.
-2. `dbt/macros/read_bronze.sql` forces the same column to `VARCHAR` when
-   DuckDB reads the landed Bronze CSV.
-3. Every staging model applies `LPAD(ccn, 6, '0')` regardless, so a source
-   that ever *does* lose the leading zero gets caught and corrected, not
-   silently propagated.
+### `mart_ed_performance_vs_hvbp`
 
-Tests: `tests/test_loader.py::test_ccn_leading_zero_survives_naive_pandas_read_when_dtype_forced`
-reproduces the bug and proves the fix at the pandas level;
-`test_full_ingest_path_preserves_ccn` proves `"010001"` survives the whole
-config-driven ingest path unchanged; `dbt_utils.expression_is_true:
-length(ccn) = 6` enforces it continuously on `dim_hospital`.
+This is the main analysis table.
 
-**The number the bug fix produced:** after the fix, **2,451 of the 2,455
-HVBP hospitals** also appear in the 4,660-hospital ED dataset (CCN overlap,
-computed in `dim_hospital`). Before the fix, `provider_id` values like
-`10001` couldn't correctly join against 6-character CCNs from the ED side
-at all — this overlap is direct evidence the bug mattered, not a number
-that existed independently of fixing it.
+It combines:
 
-**Config-driven ingestion.** One loader (`ingest/loader.py`), two YAML
-configs (`config/sources/cms_hvbp.yml`, `cms_iqr.yml`). Each config
-declares its schema (types, dtype hints, required/min/max), its validation
-rules (uniqueness, not-null, minimum row count), and its Bronze output
-path. `cms_hvbp.yml` reads the true raw CMS export (needs the dtype fix
-above). `cms_iqr.yml` reads the PySpark-standardized ED landing extracts
-(`transform/spark_jobs.py` — not run in CI, since the true raw multi-condition
-IQR export is too large to commit; its committed output is what
-`cms_iqr.yml` ingests). Same engine, same validation, same CCN handling,
-regardless of which source it's pointed at — that's the point: two
-ingestion styles (repo 3's ad hoc pandas script, repo 4's PySpark-only
-path) become one.
+- ED measures
+- HVBP total score
+- HVBP domain scores
+- Boarding-time rankings
+- Hospital peer information
 
-**dbt.** Staging → intermediate → marts, tested with `dbt_utils` generic
-tests (`unique_combination_of_columns`, `expression_is_true`,
-`relationships`) plus standard `unique` / `not_null` / `accepted_values`.
-54 tests, all green (`dbt build`). DuckDB is the default profile target
-(`dbt/profiles.yml`, committed — no secrets needed for DuckDB); Snowflake
-is a documented alternate.
+---
 
-**Tests.** `pytest` — 20 tests: loader/validation unit tests (including the
-CCN regression above) and API integration tests against a hand-built
-fixture DuckDB database (`tests/conftest.py`), independent of a full dbt
-build.
+# Boarding Time Measure
 
-**CI** (`.github/workflows/ci.yml`, on every push): `ruff check`, the
-config-driven loader, `pytest`, `dbt deps` + `dbt build` against DuckDB, and
-an API smoke test against the resulting database.
+CMS does not provide a measure literally named "boarding time" in this dataset.
 
-## API
+This project uses:
 
-FastAPI, async handlers, Pydantic request/response models, structured JSON
-logging (with request ID + duration per request), custom exception
-handlers returning structured errors, an in-process TTL cache on lookups,
-and API key auth via the `X-API-Key` header. No `/predict` — there's no
-model.
+**OP_18d — median minutes before transfer to another facility**
 
+as a boarding-time proxy.
+
+The reason is that patients waiting for transfer to another facility are effectively waiting in the ED for their next placement.
+
+This is a **project modeling decision**, not an official CMS definition.
+
+---
+
+# Synthetic Financial Estimate
+
+The field:
+
+```text
+estimated_dollar_impact_synthetic
 ```
+
+is **not actual CMS payment data**.
+
+It is a project assumption based on:
+
+1. HVBP Total Performance Score quartiles
+2. The actual FY2026 score distribution
+3. An assumed $10 million Medicare base revenue per hospital
+
+The value is clearly labeled as synthetic and is never presented as an actual payment amount.
+
+The field:
+
+```text
+payment_adjustment_factor
+```
+
+is currently `null`.
+
+It exists so that the real CMS payment adjustment factor can be added later without changing the database structure.
+
+---
+
+# Data Limitations
+
+There are several important limitations.
+
+### 1. Only one HVBP fiscal year
+
+The project currently uses FY2026 data.
+
+A multi-year analysis will require additional HVBP years.
+
+### 2. ED data is limited
+
+The IQR data currently includes:
+
+- EDV
+- OP_18a
+- OP_18b
+- OP_18c
+- OP_18d
+- OP_22
+- OP_23
+
+Other IQR measures are not included.
+
+### 3. Real payment adjustment data is not included
+
+The actual CMS payment adjustment factor is not loaded.
+
+Instead:
+
+```text
+payment_adjustment_factor = null
+```
+
+and the synthetic estimate is clearly labeled as an assumption.
+
+### 4. Some fiscal-period dates are approximate
+
+The exact CMS performance periods for some HVBP domains are not reproduced in this project.
+
+### 5. Boarding time is a proxy
+
+OP_18d is being used as a proxy for boarding time. It is not an official CMS boarding-time metric.
+
+### 6. The analysis is correlational
+
+The analysis uses one fiscal year and does not establish causation.
+
+It does **not** show that ED performance causes reimbursement changes.
+
+---
+
+# Engineering
+
+## Fixing the CCN Bug
+
+One important bug was found and fixed in the original data pipeline.
+
+CMS hospital IDs are called **CCNs** and should contain six characters.
+
+For example:
+
+```text
+010001
+```
+
+The original loader used:
+
+```python
+pd.read_csv()
+```
+
+without specifying the data type.
+
+Because CMS provided the ID as:
+
+```text
+010001
+```
+
+Pandas interpreted it as a number:
+
+```text
+10001
+```
+
+The leading zero was lost.
+
+This caused hospital IDs to stop matching the six-character CCNs in the other dataset.
+
+### The Fix
+
+The project protects the CCN in three places.
+
+**1. During ingestion**
+
+The loader reads the hospital ID as a string instead of a number.
+
+```text
+dtype_hint: str
+```
+
+This prevents the leading zero from being removed.
+
+**2. During Bronze-layer reading**
+
+DuckDB also reads the CCN as a `VARCHAR`.
+
+**3. During dbt staging**
+
+The staging models use:
+
+```sql
+LPAD(ccn, 6, '0')
+```
+
+This adds the missing leading zero if necessary.
+
+This gives the project multiple layers of protection against the same problem.
+
+---
+
+# Testing the Bug Fix
+
+The tests verify that the CCN remains correct.
+
+For example:
+
+```text
+010001
+```
+
+must remain:
+
+```text
+010001
+```
+
+rather than becoming:
+
+```text
+10001
+```
+
+Tests include:
+
+```text
+test_ccn_leading_zero_survives_naive_pandas_read_when_dtype_forced
+```
+
+and:
+
+```text
+test_full_ingest_path_preserves_ccn
+```
+
+The dbt model also checks that every CCN contains exactly six characters.
+
+---
+
+# Impact of the Bug Fix
+
+After fixing the CCN issue:
+
+**2,451 of the 2,455 HVBP hospitals** were successfully matched with hospitals in the ED dataset.
+
+The ED dataset contains approximately **4,660 hospitals**.
+
+Before the fix, IDs such as:
+
+```text
+10001
+```
+
+could not correctly match:
+
+```text
+010001
+```
+
+The improved overlap demonstrates that the bug had a real impact on the data pipeline.
+
+---
+
+# Config-Driven Data Ingestion
+
+Instead of creating a separate ingestion script for every dataset, the project uses:
+
+```text
+ingest/loader.py
+```
+
+with two configuration files:
+
+```text
+config/sources/cms_hvbp.yml
+config/sources/cms_iqr.yml
+```
+
+The configuration files define:
+
+- Data types
+- Required fields
+- Minimum and maximum values
+- Validation rules
+- Minimum row counts
+- Output locations
+
+The same loader can therefore process both sources.
+
+This replaces separate, dataset-specific ingestion scripts with one reusable ingestion system.
+
+---
+
+# dbt
+
+The dbt pipeline follows:
+
+```text
+Staging
+   ↓
+Intermediate
+   ↓
+Marts
+```
+
+The project uses dbt tests such as:
+
+- `unique`
+- `not_null`
+- `accepted_values`
+- `unique_combination_of_columns`
+- `expression_is_true`
+- `relationships`
+
+There are currently:
+
+**54 dbt tests**
+
+and they pass successfully with:
+
+```bash
+dbt build
+```
+
+DuckDB is the default database and does not require credentials.
+
+---
+
+# Python Tests
+
+The project also contains **20 pytest tests**.
+
+They cover:
+
+- Loader behavior
+- Data validation
+- CCN handling
+- API behavior
+- API integration
+
+The API tests use a small test DuckDB database rather than requiring a complete production database.
+
+Run:
+
+```bash
+pytest
+```
+
+---
+
+# CI Pipeline
+
+GitHub Actions runs automatically on every push.
+
+The CI pipeline checks:
+
+```text
+ruff check
+     ↓
+Data loader
+     ↓
+pytest
+     ↓
+dbt deps
+     ↓
+dbt build
+     ↓
+API smoke test
+```
+
+This helps make sure that code changes do not break the ingestion pipeline, database models, tests, or API.
+
+---
+
+# API
+
+The project provides a **FastAPI read API**.
+
+The API includes:
+
+- Async request handlers
+- Pydantic request/response models
+- Structured JSON logs
+- Request IDs
+- Request duration tracking
+- Structured error responses
+- TTL caching
+- API-key authentication
+
+Authentication uses:
+
+```text
+X-API-Key
+```
+
+There is no `/predict` endpoint because the project does not contain an ML model.
+
+### Available Endpoints
+
+```text
 GET /health
+
 GET /hospitals?state=NY&limit=50&offset=0
+
 GET /hospitals/{ccn}
+
 GET /hospitals/{ccn}/peers
 ```
 
+Example:
+
 ```bash
-curl -H "X-API-Key: dev-local-key" http://localhost:8000/hospitals/010001
+curl -H "X-API-Key: dev-local-key" \
+http://localhost:8000/hospitals/010001
 ```
+
+Example response:
 
 ```json
 {
@@ -271,56 +563,183 @@ curl -H "X-API-Key: dev-local-key" http://localhost:8000/hospitals/010001
   "estimated_dollar_impact_synthetic": 0.0,
   "payment_adjustment_factor": null,
   "measures": [
-    {"measure_id": "OP_18a", "reported_value": 218.0, "unit": "minutes", "direction": "lower_is_better"}
+    {
+      "measure_id": "OP_18a",
+      "reported_value": 218.0,
+      "unit": "minutes",
+      "direction": "lower_is_better"
+    }
   ]
 }
 ```
 
+Other examples:
+
 ```bash
-curl -H "X-API-Key: dev-local-key" "http://localhost:8000/hospitals?state=AL&limit=5"
-curl -H "X-API-Key: dev-local-key" http://localhost:8000/hospitals/010001/peers
+curl -H "X-API-Key: dev-local-key" \
+"http://localhost:8000/hospitals?state=AL&limit=5"
+
+curl -H "X-API-Key: dev-local-key" \
+http://localhost:8000/hospitals/010001/peers
 ```
 
-A request without a valid `X-API-Key` gets a structured 401; an unknown CCN
-gets a structured 404 with a `request_id` you can grep the logs for.
+Invalid API keys return a structured `401` response.
 
-## Running it
+Unknown hospital CCNs return a structured `404` response.
+
+---
+
+# Running the Project
+
+## Option 1: Run Locally
+
+Install the project:
 
 ```bash
 pip install -e ".[dev]"
+```
 
-# ingest -> Bronze, then build the entire warehouse in DuckDB
+Run the data ingestion:
+
+```bash
 python -m cms_platform.ingest.loader
-cd dbt && dbt deps --profiles-dir . && dbt build --profiles-dir . && cd ..
+```
 
-# serve the API
+Build the dbt warehouse:
+
+```bash
+cd dbt
+dbt deps --profiles-dir .
+dbt build --profiles-dir .
+cd ..
+```
+
+Start the API:
+
+```bash
 uvicorn cms_platform.api.main:app --reload
 ```
 
-Or the whole thing in Docker:
+---
+
+# Option 2: Run with Docker
+
+The project also supports Docker Compose.
 
 ```bash
 docker compose up
 ```
 
-`docker-compose.yml` runs the loader + `dbt build` into a shared volume
-first, then starts the API against it — `docker compose up` works from a
-clean clone with no manual steps.
+Docker will:
 
-Run the finding: `python -m cms_platform.analysis.ed_hvbp_finding`.
-Run tests: `pytest`. Lint: `ruff check src tests`.
+1. Run the data loader
+2. Build the dbt warehouse
+3. Store the database in a shared volume
+4. Start the API
 
-## Dashboards
+This means the project can be started from a clean clone without manually running each step.
 
-Power BI, built from `mart_ed_performance_vs_hvbp` and the HVBP financial
-marts — `powerbi/healthcare.pbix`, exports in `exports/`. Kept small and
-last on purpose: the platform underneath is the point of this repo, not
-the dashboard on top of it.
+---
 
-## What this repo demonstrates
+# Useful Commands
 
-Data engineering (PySpark, dbt, config-driven ingestion, validation,
-lineage), backend engineering (typed async API, structured errors, tests,
-Docker, CI), a real domain bug found and root-caused across three layers,
-and CMS healthcare data depth. No model, no `/predict` — the ML in this
-portfolio is in the retrieval system and the denial agent, not here.
+Run the analysis:
+
+```bash
+python -m cms_platform.analysis.ed_hvbp_finding
+```
+
+Run tests:
+
+```bash
+pytest
+```
+
+Run linting:
+
+```bash
+ruff check src tests
+```
+
+---
+
+# Dashboards
+
+The project includes Power BI dashboards built from:
+
+```text
+mart_ed_performance_vs_hvbp
+```
+
+and the HVBP financial marts.
+
+The Power BI file is:
+
+```text
+powerbi/healthcare.pbix
+```
+
+Dashboard exports are stored in:
+
+```text
+exports/
+```
+
+The dashboard is intentionally kept simple because the main focus of the project is the data platform underneath it.
+
+---
+
+# What This Project Demonstrates
+
+This project demonstrates four main areas:
+
+### Data Engineering
+
+- PySpark
+- dbt
+- Config-driven ingestion
+- Data validation
+- Data lineage
+- DuckDB
+- Snowflake-ready architecture
+
+### Backend Engineering
+
+- FastAPI
+- Async APIs
+- Pydantic
+- API authentication
+- Structured errors
+- Caching
+- Docker
+- CI/CD
+- Automated testing
+
+### Problem Solving
+
+A real CCN data-quality bug was found, investigated, and fixed across multiple layers of the pipeline.
+
+### Healthcare Data
+
+The project works with real CMS hospital performance data and combines:
+
+- HVBP performance
+- ED throughput
+- Hospital information
+- Hospital peer comparisons
+
+---
+
+## In Simple Terms
+
+The project takes **two different CMS hospital datasets**, cleans and validates them, makes sure hospitals can be matched correctly, stores the information in a structured database, and exposes the data through an API and dashboard.
+
+The main analysis asks:
+
+> **Do hospitals with longer ED boarding times have worse HVBP performance?**
+
+For FY2026, the answer from this dataset is:
+
+> **No meaningful relationship was found.**
+
+The project is therefore primarily a **data engineering + backend platform**, with an analysis layer on top of it — not an ML prediction system.
