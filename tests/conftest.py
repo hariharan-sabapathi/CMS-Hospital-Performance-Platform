@@ -54,7 +54,10 @@ def fixture_db(tmp_path):
          2026, 32.17, 6.0, 12.9, 10.75, 2.5, 'Average', 0.0, null, 0.6, 0.2),
         ('h2','010005','MARSHALL MEDICAL CENTERS',null,'BOAZ','AL','35957','MARSHALL',
          true, true, 'high', 145.0, 141.0, 280.0, 271.0, 0.5, 64.0,
-         2026, 20.92, 1.25, 7.9, 9.25, 2.5, 'High Risk', -100000.0, null, 0.3, 0.4)
+         2026, 20.92, 1.25, 7.9, 9.25, 2.5, 'High Risk', -100000.0, null, 0.3, 0.4),
+        ('h3','020001','ED ONLY HOSPITAL',null,'HOUSTON','TX','77002','HARRIS',
+         true, false, 'medium', 190.0, 188.0, null, null, 0.8, 70.0,
+         2026, null, null, null, null, null, null, null, null, null, null)
         """
     )
 

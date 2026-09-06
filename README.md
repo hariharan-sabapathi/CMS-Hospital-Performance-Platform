@@ -637,6 +637,8 @@ Every error response — auth failure, bad query parameter, not-found, unhandled
 
 `GET /hospitals`, `GET /hospitals/{ccn}`, and `GET /hospitals/{ccn}/peers` all compute a strong ETag (a SHA-256 hash over the canonical JSON body) and set it as a response header. A request that sends back `If-None-Match: <etag>` for an unchanged resource gets `304 Not Modified` with an empty body and the same `ETag` header — no serialization, no body over the wire. Because the API sits in front of a DuckDB file that only changes when `dbt build` reruns, this is exact, not approximate: identical query → identical bytes → identical ETag.
 
+`list_cache`/`hospital_cache` sit in front of the ETag computation with a 30–60 second TTL and no invalidation hook on `dbt build`, so for up to that TTL window after a rebuild the API can serve a stale cached body (and a stale ETag to match it) rather than the freshly built row — a known, accepted staleness window, not a bug worth building cache invalidation to close.
+
 ### `/healthz` vs `/readyz`
 
 - `GET /healthz` — liveness. Always `200` if the process can accept requests. Never touches DuckDB.

@@ -12,8 +12,8 @@ through `problem_response` so the shape is identical everywhere:
       "request_id": "<uuid4, from the request-context middleware>"
     }
 
-`type` and `title` are unlisted from the RFC 7807 spec as constants per
-problem kind; `detail`, `instance`, and `request_id` vary per request.
+`type` and `title` are held constant per problem kind; `detail`, `instance`,
+and `request_id` vary per request.
 `request_id` is a documented extension member (RFC 7807 section 3.2 allows
 these) so a client can hand it back for support/log correlation.
 """

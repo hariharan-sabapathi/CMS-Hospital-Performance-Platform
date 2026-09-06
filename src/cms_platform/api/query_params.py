@@ -128,15 +128,39 @@ def build_keyset_clause(sort: SortSpec, cursor: Cursor | None) -> tuple[str, lis
     (DuckDB can't bind identifiers) and never raw user input. `ccn` is
     always the tiebreaker column so pagination is stable even when the sort
     column has duplicate values.
+
+    Sortable columns like `total_performance_score` and
+    `ed_boarding_time_minutes` are nullable — `mart_ed_performance_vs_hvbp`
+    is built with left joins, and `present_in_ed`/`present_in_hvbp` exist
+    precisely because some hospitals are missing from one side. A plain
+    `(col, ccn) > (?, ?)` row comparison evaluates to SQL NULL (not TRUE)
+    the moment either side is NULL, which silently rejects every remaining
+    row instead of returning them — pagination looks fine (200, a shrinking
+    result set) but quietly drops every hospital with a NULL sort value.
+    order_by_clause always sorts NULLs last regardless of direction, so the
+    fix is keyed off whether the cursor's last row was itself in that NULL
+    bucket:
+      * last row had a value: match any later non-NULL value in this
+        bucket, OR any NULL row at all (the whole NULL bucket sorts after
+        every non-NULL row, ascending or descending).
+      * last row was NULL: every remaining row is also in the NULL bucket,
+        ordered only by the ccn tiebreaker.
     """
     if cursor is None:
         return "1 = 1", []
 
     op = "<" if cursor.descending else ">"
-    clause = f"({sort.column}, ccn) {op} (?, ?)"
-    return clause, [cursor.last_value, cursor.last_ccn]
+    column = sort.column
+
+    if cursor.last_value is None:
+        clause = f"({column} is null and ccn {op} ?)"
+        return clause, [cursor.last_ccn]
+
+    clause = f"(({column} is not null and ({column} {op} ? or ({column} = ? and ccn {op} ?))) or {column} is null)"
+    return clause, [cursor.last_value, cursor.last_value, cursor.last_ccn]
 
 
 def order_by_clause(sort: SortSpec) -> str:
+    """NULLs always sort last, in both directions — the keyset predicate above assumes this."""
     direction = "desc" if sort.descending else "asc"
-    return f"{sort.column} {direction}, ccn {direction}"
+    return f"({sort.column} is null) asc, {sort.column} {direction} nulls last, ccn {direction}"
