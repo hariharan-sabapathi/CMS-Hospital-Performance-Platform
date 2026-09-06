@@ -47,7 +47,7 @@ CMS Hospital Performance Platform
                 v                           v
       FastAPI read API                Power BI dashboards
    /hospitals, /hospitals/{ccn},   (mart_ed_performance_vs_hvbp
-   /hospitals/{ccn}/peers, /health  + HVBP financial marts)
+   /hospitals/{ccn}/peers, /healthz, /readyz  + HVBP financial marts)
 
 ------------------------------------------------------------------------
 Tool boundaries (each layer owned by exactly one tool):

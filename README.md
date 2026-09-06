@@ -393,33 +393,37 @@ The improved overlap demonstrates that the bug had a real impact on the data pip
 
 ---
 
-# Config-Driven Data Ingestion
+# Config-Driven Data Ingestion — a Design Decision
 
-Instead of creating a separate ingestion script for every dataset, the project uses:
+Instead of creating a separate ingestion script for every dataset, the project uses one loader:
 
 ```text
 ingest/loader.py
 ```
 
-with two configuration files:
+driven entirely by two YAML configs:
 
 ```text
 config/sources/cms_hvbp.yml
 config/sources/cms_iqr.yml
 ```
 
+This is called out explicitly as a design decision because HVBP and IQR are not the same shape of problem — a single loader handling both is the interesting part, not an incidental convenience:
+
+- **HVBP** is one flat CMS export: a single CSV, a single table, `source:` + `file:`/`output:` at the top level of the YAML.
+- **IQR** is two related tables (`hospital` and `measures`) produced by a separate PySpark job (`transform/spark_jobs.py`) that filters a much larger raw extract down to the Emergency Department slice before this loader ever sees it. Its config uses a `tables:` block, one sub-config per output table, each with its own schema and validation rules.
+
+Both configs are still interpreted by the exact same `load_source()` / `load_table()` code path: `load_source()` checks for a `tables:` key and treats a single-table config as a `tables:` block of one, so the branch between "one table" and "many tables" lives entirely in the YAML shape, not in a per-dataset code branch. The loader itself doesn't know or care whether it's ingesting HVBP or IQR — it only knows how to interpret the shared config schema: `column_map`, `schema` (with `dtype_hint`, `required`, `min`/`max`), `is_ccn`, and `validation` (`unique`, `not_null`, `row_count_min`). Adding a third CMS dataset is a new YAML file, not a new ingestion script.
+
 The configuration files define:
 
-- Data types
+- Data types (including `dtype_hint: str`, which is what fixes the CCN leading-zero bug — see below)
 - Required fields
 - Minimum and maximum values
-- Validation rules
-- Minimum row counts
+- Validation rules (`unique`, `not_null`, `row_count_min`)
 - Output locations
 
-The same loader can therefore process both sources.
-
-This replaces separate, dataset-specific ingestion scripts with one reusable ingestion system.
+This replaces separate, dataset-specific ingestion scripts with one reusable, config-driven ingestion system — the tradeoff being that the YAML schema itself has to be expressive enough to describe genuinely different table shapes, which is why it supports both a flat single-table config and a `tables:` block.
 
 ---
 
@@ -515,9 +519,14 @@ The API includes:
 - Structured JSON logs
 - Request IDs
 - Request duration tracking
-- Structured error responses
+- RFC 7807 structured error responses
+- Cursor (keyset) pagination
+- Whitelisted filtering and sorting
+- ETag / conditional GET (`If-None-Match` → `304`)
 - TTL caching
 - API-key authentication
+- `/healthz` and `/readyz` probes
+- OpenAPI examples on every schema (see `/docs`)
 
 Authentication uses:
 
@@ -530,9 +539,10 @@ There is no `/predict` endpoint because the project does not contain an ML model
 ### Available Endpoints
 
 ```text
-GET /health
+GET /healthz
+GET /readyz
 
-GET /hospitals?state=NY&limit=50&offset=0
+GET /hospitals?state=NY&sort=-total_performance_score&limit=50&cursor=...
 
 GET /hospitals/{ccn}
 
@@ -575,15 +585,68 @@ Other examples:
 
 ```bash
 curl -H "X-API-Key: dev-local-key" \
-"http://localhost:8000/hospitals?state=AL&limit=5"
+"http://localhost:8000/hospitals?state=AL&sort=-total_performance_score&limit=5"
 
 curl -H "X-API-Key: dev-local-key" \
 http://localhost:8000/hospitals/010001/peers
 ```
 
-Invalid API keys return a structured `401` response.
+---
 
-Unknown hospital CCNs return a structured `404` response.
+## API Contract
+
+Every endpoint in this API follows the same set of rules. This section names them explicitly so the contract is a documented decision, not an implicit convention someone has to reverse-engineer from the code.
+
+### Errors are RFC 7807 (`application/problem+json`), everywhere
+
+Every error response — auth failure, bad query parameter, not-found, unhandled exception — has the exact same shape:
+
+```json
+{
+  "type": "https://cms-platform.dev/problems/hospital-not-found",
+  "title": "Hospital Not Found",
+  "status": 404,
+  "detail": "No hospital found for CCN '999999'.",
+  "instance": "/hospitals/999999",
+  "request_id": "b3f1c2e4-9a3b-4b8b-9c1a-1e2f3a4b5c6d"
+}
+```
+
+- `type` / `title` are fixed per problem kind (see `api/problem.py`); `type` is a documentation URI, not something the client needs to fetch — RFC 7807 §3.1 explicitly allows that.
+- `detail`, `instance`, and `request_id` vary per occurrence. `request_id` is a documented extension member (RFC 7807 §3.2 permits extensions) and matches the `X-Request-ID` response header and the structured log line for that request, so a single ID ties a client-visible error to a server log entry.
+- This is implemented as one thing: every custom exception (`HospitalNotFoundError`, `InvalidQueryParameterError`, `InvalidCursorError`), FastAPI's own `RequestValidationError` and `HTTPException`, and the catch-all `Exception` handler all route through the same `problem_response()` helper in `api/problem.py`. There is exactly one place that builds an error body.
+
+### Filtering and sorting go through a whitelist, not string interpolation
+
+`GET /hospitals` accepts `state`, `ed_volume_category`, `synthetic_tier_label` as filters and a `sort` parameter (e.g. `sort=-total_performance_score` for descending). None of those values are ever spliced into SQL directly. `api/query_params.py` holds two fixed dicts — `ALLOWED_FILTERS` and `ALLOWED_SORT_FIELDS` — mapping a public query-param key to the actual column name. A request's `sort`/filter *keys* are looked up in that dict; if the key isn't present, the request fails with a `400 invalid-query-parameter` problem before any SQL is built. Only the whitelist's *own* value (never the raw query string) is spliced into the SQL string as a column identifier — the one place DuckDB can't accept a bound parameter. Every filter *value* is passed as a bound parameter, never interpolated. Adding a new filterable or sortable column is a one-line addition to a dict, not a new code path.
+
+### List pagination is cursor-based (keyset), not offset/limit
+
+`GET /hospitals` returns:
+
+```json
+{
+  "data": [ { "ccn": "010001", "...": "..." } ],
+  "pagination": { "limit": 50, "next_cursor": "eyJ2IjoxLCJmIjoiY2NuIiwi...", "has_more": true }
+}
+```
+
+`next_cursor` is an opaque, base64-encoded token carrying the sort field, direction, and the last row's sort value + CCN tiebreaker. The next page is fetched with `?cursor=<next_cursor>` using the *same* `sort` and filters — a cursor issued for one sort order is rejected (`400 invalid-cursor`) if replayed against a different one. This was chosen over `offset`/`limit` deliberately: offset pagination re-scans and can skip or repeat rows when the underlying mart is rebuilt between page requests (`dbt build` reruns), while a keyset cursor is stable against that — the next page starts strictly after the last row's key, not the Nth row from the top, and does not require or expose an expensive `total` count.
+
+### Conditional GET: ETag + `If-None-Match` → `304`
+
+`GET /hospitals`, `GET /hospitals/{ccn}`, and `GET /hospitals/{ccn}/peers` all compute a strong ETag (a SHA-256 hash over the canonical JSON body) and set it as a response header. A request that sends back `If-None-Match: <etag>` for an unchanged resource gets `304 Not Modified` with an empty body and the same `ETag` header — no serialization, no body over the wire. Because the API sits in front of a DuckDB file that only changes when `dbt build` reruns, this is exact, not approximate: identical query → identical bytes → identical ETag.
+
+### `/healthz` vs `/readyz`
+
+- `GET /healthz` — liveness. Always `200` if the process can accept requests. Never touches DuckDB.
+- `GET /readyz` — readiness. `200` only if the DuckDB warehouse file exists and is queryable; `503` (RFC 7807 body) otherwise. This is the one a container orchestrator or load balancer should gate traffic on.
+
+### OpenAPI examples
+
+Every Pydantic response model (`ProblemDetail`, `HospitalProfile`, `HospitalListResponse`, `PeerComparison`, `ReadyzResponse`, ...) carries a `json_schema_extra["examples"]` entry, so `/docs` and `/openapi.json` show real example payloads for every endpoint and every documented error response, not just the bare schema.
+
+Invalid API keys return a structured `401` problem. Unknown hospital CCNs return a structured `404` problem. Unrecognized filter/sort fields return a structured `400` problem.
 
 ---
 
